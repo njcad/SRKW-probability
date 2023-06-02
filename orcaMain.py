@@ -17,12 +17,13 @@ Description: this file accomplishes four principal goals.
    next sighting of a SRKW?
 
 This project uses a combination of statistical analyses, including bootstrapping,
-exponential random variable models, and 'area inflation' to find results. Data is from
-The Whale Museum's Orca Master dataset in WA State.
+exponential random variable models, Laplace smoothing and 'area inflation' to find results.
+Data is from The Whale Museum's Orca Master dataset in WA State. The data is a 20,000+
+line CSV with date/time, pod type, and latitude/longitude of SRKW observation.
 
 Author: Nathanael James Cadicamo
 
-Date: 26 May 2023
+Date: 02 June 2023
 
 """
 
@@ -32,13 +33,14 @@ import random
 import numpy as np
 from datetime import datetime
 from scipy import stats
+import time
 
 # defining CSV data sets for later access; stored locally on natecadicamo macbook
 DATA_total = '/Users/natecadicamo/Desktop/orcas/Cadicamo_SRKW_DataRequest.csv'
 DATA_clean = '/Users/natecadicamo/Desktop/orcas/orcaDataClean.csv'
 
 
-# Part 1: get date from user, find most likely location [long, lat] to encounter SRKW
+# Part 1: given date from user, find most likely location [lat, long] to encounter SRKW
 
 def find_location(month):
     """
@@ -59,6 +61,7 @@ def find_location(month):
             sighting_date.split('/')
             sighting_month = int(sighting_date[0])
             if month == sighting_month:
+                # sightings: [latitude, longitude]
                 sightings.append((float(row[2]), float(row[3])))
 
     # error case: no data for that month
@@ -67,7 +70,7 @@ def find_location(month):
         return ['error', -1]
 
     # find and print best location
-    print("Calculating... this will take a minute...")
+    print("Calculating... this will take a moment...")
     best = best_location(sightings)
     print(f'The best location is {best}.')
     print('(Note that even though this location has the highest probability, orcas are still quite rare!)')
@@ -85,10 +88,10 @@ def best_location(sightings):
     # initialize an unnecessarily large grid
     grid = [[0 for _ in range(20000)] for _ in range(20000)]
 
-    # fill into grid, rounding to approximately 1 km
+    # fill into grid, rounding to approximately 1.1 km
     for s in sightings:
-        x = round(s[0] * 100)
-        y = round(s[1] * -100)
+        y = round(s[0] * 100)   # latitude
+        x = round(s[1] * -100)  # longitude
         grid[x][y] += 1
 
     # find best location
@@ -98,7 +101,9 @@ def best_location(sightings):
         for col in range(20000):
             if grid[row][col] > prob:
                 prob = grid[row][col]
-                best = (row / 100, - col / 100)
+                # switch (x, y) to (y, - x) = (lat, long)
+                best = (col / 100, - row / 100)
+    print(f'\nNumber of historical sightings at best location: {prob}.')
     return best
 
 
@@ -111,40 +116,39 @@ def find_prob(loc, sightings):
     Approach: area bootstrap
     """
     # find relevant bounds: 111 km approximate daily range of SRKW
-    lat_max = loc[0] + 1
-    lat_min = loc[0] - 1
-    long_max = loc[1] + 1
-    long_min = loc[1] - 1
+    lat_max = loc[0] + 1    # y-max
+    lat_min = loc[0] - 1    # y-min
+    long_max = loc[1] + 1   # x-max
+    long_min = loc[1] - 1   # x-min
     whale_bounds = [lat_max, lat_min, long_max, long_min]
 
     # get all sightings in the nearby bounds
     nearby_points = []
     for s in sightings:
-        if lat_min < s[0] < lat_max:
-            if long_min < s[1] < long_max:
+        if lat_min < s[0] < lat_max:         # y-value
+            if long_min < s[1] < long_max:   # x-value
                 nearby_points.append(s)
 
-    # inflate points to be areas in sighting range 0.01, approximately 1 km
+    # inflate points to be areas in sighting range 0.01, approximately 1.1 km
     nearby_areas = []
     for p in nearby_points:
-        x_max = p[0] + 0.01
-        x_min = p[0] - 0.01
-        y_max = p[1] + 0.01
-        y_min = p[1] - 0.01
-        nearby_areas.append([x_max, x_min, y_max, y_min])
+        y_max = p[0] + 0.01   # latitude max
+        y_min = p[0] - 0.01   # latitude min
+        x_max = p[1] + 0.01   # longitude max
+        x_min = p[1] - 0.01   # longitude min
+        nearby_areas.append([y_max, y_min, x_max, x_min])
 
     # bounds for visible sighting from loc
-    sight_x_max = loc[0] + 0.01
-    sight_x_min = loc[0] - 0.01
-    sight_y_max = loc[1] + 0.01
-    sight_y_min = loc[1] - 0.01
-    sight_bounds = [sight_x_max, sight_x_min, sight_y_max, sight_y_min]
+    sight_y_max = loc[0] + 0.01   # latitude max
+    sight_y_min = loc[0] - 0.01   # latitude min
+    sight_x_max = loc[1] + 0.01   # longitude max
+    sight_x_min = loc[1] - 0.01   # longitude min
+    sight_bounds = [sight_y_max, sight_y_min, sight_x_max, sight_x_min]
 
     # call bootstrap function
     prob = bootstrap(whale_bounds, sight_bounds, nearby_areas)
     print(f'The probability of seeing a SRKW here is {round(prob, 6)}.')
-    if prob == 0:
-        print('They are rare and elusive creatures... someday, somewhere –– but not today, and not here!')
+    print('They are rare and elusive creatures...')
     return prob
 
 
@@ -156,15 +160,13 @@ def bootstrap(whale_bounds, sight_bounds, nearby_areas):
     """
     # generate sample space as area of whale bounds
     sample_space = (whale_bounds[0] - whale_bounds[1]) * (whale_bounds[2] - whale_bounds[3])
-    # print(sample_space)
 
     # find event space as total area of nearby areas
     event_space = 0
     for a in nearby_areas:
         event_space += (a[0] - a[1]) * (a[2] - a[3])
-    # print(event_space)
 
-    # basic bernoulli probability of orca event in sample space
+    # basic binary probability of orca event in sample space
     p = event_space / sample_space
 
     # now, bootstrap it with discrete events
@@ -182,22 +184,22 @@ def bootstrap(whale_bounds, sight_bounds, nearby_areas):
             if sight_bounds[1] < orca_lat < sight_bounds[0] and sight_bounds[3] < orca_long < sight_bounds[2]:
                 orcas_in_sight += 1
 
-    # return the bootstrapped probability
-    return orcas_in_sight / large_number
+    # return the bootstrapped probability, with Laplace smoothing
+    return (orcas_in_sight + 1) / (large_number + 1)
 
 
 # Part 3: given date, location, and encounter, find most likely pod (J, K, or L)
 
 def most_likely_pod(month, loc):
     """
-    Input: month, as int; loc, as [float x, float y]
+    Input: month, as int; loc, as [lat (y), long (x)]
     Output: pod (J, K, or L) and P(pod)
     """
     # find loc bounds: 111 km approximate daily range of SRKW
-    lat_max = loc[0] + 1
-    lat_min = loc[0] - 1
-    long_max = loc[1] + 1
-    long_min = loc[1] - 1
+    lat_max = loc[0] + 1    # y-max
+    lat_min = loc[0] - 1    # y-min
+    long_max = loc[1] + 1   # x-max
+    long_min = loc[1] - 1   # x-min
 
     # relevant sightings
     pod_sightings = []
@@ -213,11 +215,11 @@ def most_likely_pod(month, loc):
             sighting_date.split('/')
             sighting_month = int(sighting_date[0])
             if month == sighting_month:
-                x = float(row[2])
-                y = float(row[3])
+                y = float(row[2])   # latitude
+                x = float(row[3])   # longitude
                 # check if sighting is within bounds
-                if lat_min < x < lat_max:
-                    if long_min < y < long_max:
+                if lat_min < y < lat_max:
+                    if long_min < x < long_max:
                         pod_sightings.append(row[1])
 
     # pod counts with Laplace smoothing
@@ -244,7 +246,7 @@ def most_likely_pod(month, loc):
         pod_counts[key] /= total
         pod_counts[key] = round(pod_counts[key], 3)
     print(f'In case you were wondering, the probabilities for each are: {pod_counts}.')
-    print('(Note that you may see more than 1 pod...)\n')
+    print('(Note that you may see more than 1 pod...)')
 
 
 # Part 4: exponential random variable model of time until next sighting
@@ -276,7 +278,7 @@ def time_until_next():
     time_diffs = np.diff(timestamps)
 
     # calculate average time difference, which gives expected value
-    avg_time_diff = np.mean(time_diffs)
+    avg_time_diff = float(np.mean(time_diffs))
     print(f'The expected time to wait for the next SRKW sighting is {round(avg_time_diff, 3)} hours.')
 
     # set random exponential value with scale as 1 / lambda
@@ -286,8 +288,8 @@ def time_until_next():
     print('Enter time to wait for the next SRKW in hours, and we will give the probability that it takes that long.')
     stop = False
     while not stop:
-        time = input('Enter waiting time (hours): ')
-        print(f'You would wait {time} or more hours with probability {round(1 - exp.cdf(float(time)), 3)}.\n')
+        t = input('Enter waiting time (hours): ')
+        print(f'You would wait {t} or more hours with probability {round(1 - exp.cdf(float(t)), 3)}.\n')
         keep_going = input('Want to try another time? Y/N: ')
         if keep_going == 'N' or keep_going == 'n':
             stop = True
@@ -296,16 +298,15 @@ def time_until_next():
 # main() and user interaction below
 
 def get_user_date():
-    date = input("What date are you looking for a Southern Resident Killer Whale? MMDD: ")
-
-    # ensure it is valid
+    # get date
+    date = input("\nWhat date are you looking for a Southern Resident Killer Whale? MMDD: ")
+    # ensure date is valid
     try:
         month = int(date[0:2])
     except ValueError:
         # if invalid, recurse
         print("Invalid date format. Try again please.")
-        get_user_date()
-        return
+        return get_user_date()
 
     return month
 
@@ -326,21 +327,27 @@ def main():
     use_loc = input('\nDo you want to use this location? Y/N: ')
     if use_loc == 'N' or use_loc == 'n':
         print('Okay, enter any other coordinates in the Salish Sea.')
-        lat = float(input('Latitude: '))
-        long = float(input('Longitude: '))
+        lat = float(input('Latitude: '))   # y-coordinate
+        long = float(input('Longitude: '))   # x-coordinate
         location = [lat, long]
 
     # GOAL 2: find probability of SRKW sighting
-    find_prob(location, sightings)
+    cont_to_prob = input('\nContinue to the probability of SRKW sighting? Y/N: ')
+    if cont_to_prob == 'Y' or cont_to_prob == 'y':
+        find_prob(location, sightings)
 
     # GOAL 3: find most likely pod
-    most_likely_pod(date, location)
+    cont_to_pod = input('\nContinue to most likely pod? Y/N: ')
+    if cont_to_pod == 'Y' or cont_to_pod == 'y':
+        most_likely_pod(date, location)
 
     # GOAL 4: estimate time to wait and associated probabilities
-    time_until_next()
+    cont_to_next = input('\nContinue to time until next sighting? Y/N: ')
+    if cont_to_next == 'Y' or cont_to_next == 'y':
+        time_until_next()
 
     # finish up
-    print('\nNice to chat with you. Hope you find the whale you are looking for!')
+    print('\nNice to chat with you. Hope you find the whale you are looking for!\n')
 
 
 if __name__ == '__main__':
